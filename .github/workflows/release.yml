@@ -25,8 +25,10 @@ jobs:
           - name: linux-aarch64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          # Cross-compiled on the arm64 runner: Apple's toolchain targets
+          # both architectures natively, and intel runners are scarce.
           - name: macos-x86_64
-            os: macos-13
+            os: macos-latest
             target: x86_64-apple-darwin
           - name: macos-aarch64
             os: macos-latest
