@@ -1,0 +1,15 @@
+[package]
+name = "minerust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macroquad = "0.4"
+sysinfo = "0.39.3"
+
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
