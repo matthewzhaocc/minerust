@@ -29,6 +29,10 @@ use world::{World, CHUNK, DIM_END, DIM_NETHER, DIM_OVERWORLD, HEIGHT, SEA};
 
 const DAY_LENGTH: f32 = 600.0;
 const REACH: f32 = 6.0;
+/// MineRust worlds are only 96 blocks tall, so a Minecraft column (y -64..319)
+/// is shifted down by this much when streamed in: a Minecraft y maps to
+/// MineRust y + MC_Y_OFFSET, keeping the surface comfortably in range.
+const MC_Y_OFFSET: i32 = -8;
 const CLOUD_Y: f32 = 88.0;
 const SAVE_PATH: &str = "world.sav";
 
@@ -701,7 +705,9 @@ async fn game() {
 
     // --- World, save, spawn ---
     // A joining client plays in the host's world: never load/save locally.
-    let no_save = std::env::var("MINERUST_NOSAVE").is_ok() || joined.is_some();
+    let no_save = std::env::var("MINERUST_NOSAVE").is_ok()
+        || joined.is_some()
+        || std::env::var("MINERUST_MC_CONNECT").is_ok();
     let save_path: String = chosen_save.unwrap_or_else(|| SAVE_PATH.to_string());
     let loaded = if no_save { None } else { save::load(&save_path) };
 
@@ -806,6 +812,16 @@ async fn game() {
         .map(|f| f.clamp(0.0, 1.0) * DAY_LENGTH)
         .unwrap_or(DAY_LENGTH * 0.25);
     let mut player = Player::new(spawn_pos);
+
+    // Connect to a real Minecraft server and stream its world into MineRust.
+    let mc: Option<mcclient::ClientHandle> = std::env::var("MINERUST_MC_CONNECT")
+        .ok()
+        .map(|addr| {
+            println!("[mcclient] connecting to {addr} ...");
+            mcclient::spawn_client(addr, "MineRust".to_string())
+        });
+    let mut mc_spawned = false;
+    let mut mc_pos_t = 0.0f32;
 
     let mut my_id: u8 = 0;
     if let Some((conn, _, dt0, id)) = joined {
@@ -3376,11 +3392,63 @@ async fn game() {
         let pcx = (ppos.x / CHUNK as f32).floor() as i32;
         let pcz = (ppos.z / CHUNK as f32).floor() as i32;
 
+        // When streaming a Minecraft server's world, the server is the source of
+        // chunks — skip procedural generation and integrate what arrives.
+        if let Some(handle) = &mc {
+            let mut injected = 0;
+            while let Ok(ev) = handle.events.try_recv() {
+                match ev {
+                    mcclient::ClientEvent::Chunk(col) => {
+                        let blocks: Vec<(i32, i32, i32, Block)> = col
+                            .blocks
+                            .iter()
+                            .map(|&(x, y, z, b)| (x, y + MC_Y_OFFSET, z, b))
+                            .collect();
+                        world.inject_mc_chunk(col.cx, col.cz, &blocks);
+                        injected += 1;
+                        if injected >= 8 {
+                            break; // spread chunk uploads across frames
+                        }
+                    }
+                    mcclient::ClientEvent::Spawn { x, y, z } => {
+                        player.teleport(vec3(
+                            x as f32,
+                            y as f32 + MC_Y_OFFSET as f32 + 0.2,
+                            z as f32,
+                        ));
+                        mc_spawned = true;
+                    }
+                    mcclient::ClientEvent::Connected { dimension, .. } => {
+                        chat_log.push((format!("Joined Minecraft server ({dimension})"), 10.0));
+                    }
+                    mcclient::ClientEvent::Chat(s) => {
+                        chat_log.push((mcclient::chat_to_text(&s), 10.0));
+                    }
+                    mcclient::ClientEvent::Disconnected(r) => {
+                        chat_log.push((format!("Disconnected: {r}"), 15.0));
+                    }
+                }
+            }
+            // Report our position back so the server keeps chunks loaded near us.
+            mc_pos_t -= dt;
+            if mc_spawned && mc_pos_t <= 0.0 {
+                mc_pos_t = 0.1;
+                let p = player.pos();
+                let _ = handle.pos_tx.send((
+                    p.x as f64,
+                    (p.y - MC_Y_OFFSET as f32) as f64,
+                    p.z as f64,
+                    player.yaw,
+                    0.0,
+                ));
+            }
+        }
+
         // Chunk generation runs on the worker pool; the main thread just
         // queues nearest-first requests and integrates whatever has finished.
         let mut gen_budget = 12;
         for &(dx, dz) in &offsets {
-            if gen_budget == 0 {
+            if gen_budget == 0 || mc.is_some() {
                 break;
             }
             let key = (pcx + dx, pcz + dz);

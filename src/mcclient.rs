@@ -654,6 +654,40 @@ pub fn spawn_client(addr: String, name: String) -> ClientHandle {
     ClientHandle { events: ev_rx, pos_tx }
 }
 
+/// Crudely flatten a Minecraft chat-component JSON into plain text by
+/// concatenating every `"text"` field. Good enough for a chat log line.
+pub fn chat_to_text(json: &str) -> String {
+    let mut out = String::new();
+    let bytes = json.as_bytes();
+    let needle = b"\"text\":";
+    let mut i = 0;
+    while i + needle.len() < bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            i += needle.len();
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += 1;
+            }
+            i += 1; // opening quote
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    out.push(bytes[i] as char);
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if out.is_empty() {
+        json.trim().to_string()
+    } else {
+        out
+    }
+}
+
 /// Headless join: connect, collect chunks for `secs` seconds, and print a
 /// survey of the world we received. Proves end-to-end protocol compatibility
 /// against a real server (`MINERUST_MC_SURVEY=host:port`).
@@ -756,6 +790,17 @@ mod tests {
         assert_eq!(cells[0], 7);
         assert_eq!(cells[1], 7);
         assert_eq!(cells[2], 0);
+    }
+
+    #[test]
+    fn chat_json_flattens_to_text() {
+        assert_eq!(chat_to_text(r#"{"text":"hello"}"#), "hello");
+        assert_eq!(
+            chat_to_text(r#"{"text":"<Steve> ","extra":[{"text":"hi there"}]}"#),
+            "<Steve> hi there"
+        );
+        // No text field: fall back to the raw string.
+        assert_eq!(chat_to_text("plain"), "plain");
     }
 
     #[test]

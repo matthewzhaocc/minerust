@@ -382,6 +382,31 @@ impl World {
         self.chunks.insert((cx, cz), c);
     }
 
+    /// Build (or replace) a chunk straight from blocks streamed off a Minecraft
+    /// server. `blocks` are world coordinates already remapped into MineRust's
+    /// vertical range; out-of-range entries are ignored. No terrain physics is
+    /// run — the chunk is authoritative as received — but it and its neighbours
+    /// are marked dirty so the seams re-mesh.
+    pub fn inject_mc_chunk(&mut self, cx: i32, cz: i32, blocks: &[(i32, i32, i32, Block)]) {
+        let mut c = Chunk::new();
+        for &(wx, wy, wz, b) in blocks {
+            if !(0..HEIGHT).contains(&wy) {
+                continue;
+            }
+            c.set(wx.rem_euclid(CHUNK), wy, wz.rem_euclid(CHUNK), b);
+            if matches!(b, Block::Torch | Block::RedstoneTorch | Block::Glowstone) {
+                self.torches.insert((wx, wy, wz));
+            }
+        }
+        self.chunks.insert((cx, cz), c);
+        self.dirty.insert((cx, cz));
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if self.chunks.contains_key(&(cx + dx, cz + dz)) {
+                self.dirty.insert((cx + dx, cz + dz));
+            }
+        }
+    }
+
     fn gen_nether(&mut self, cx: i32, cz: i32, c: &mut Chunk) {
         let nseed = self.seed ^ 0x6E74_4E72;
         for lx in 0..CHUNK {
