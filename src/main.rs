@@ -5,6 +5,8 @@ mod blocks;
 mod entities;
 mod gpu;
 mod items;
+mod mc_blocks;
+mod mcclient;
 mod mcproto;
 mod mesher;
 mod net;
@@ -478,6 +480,12 @@ fn main() {
         if let Err(e) = mcproto::serve_headless() {
             eprintln!("[mcproto] {e}");
         }
+        return;
+    }
+    // Headless survey: connect to a real Minecraft server, decode its world,
+    // and print what we received. Proves client-side protocol compatibility.
+    if let Ok(addr) = std::env::var("MINERUST_MC_SURVEY") {
+        mcclient::survey(&addr, 12);
         return;
     }
     macroquad::Window::from_config(conf(), game());
