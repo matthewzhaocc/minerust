@@ -1413,6 +1413,10 @@ pub type ChunkData = (Chunk, Vec<(i32, i32, i32)>, Vec<(i32, i32, i32)>);
 
 /// A pool of background threads generating chunks. The main thread requests
 /// coordinates and integrates finished chunks as they arrive.
+/// Background chunk generator. Native builds fan generation out across a pool
+/// of worker threads; the browser (`wasm32`, no threads) generates each
+/// requested chunk synchronously instead, so the same engine runs on the web.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct GenPool {
     work_tx: std::sync::mpsc::Sender<(u8, i32, i32)>,
     result_rx: std::sync::mpsc::Receiver<GenResult>,
@@ -1429,6 +1433,7 @@ type GenResult = (
     Vec<(i32, i32, i32)>,
 );
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GenPool {
     pub fn new(seed: u32) -> GenPool {
         use std::sync::{mpsc, Arc, Mutex};
@@ -1473,6 +1478,44 @@ impl GenPool {
     /// Collect every finished chunk without blocking.
     pub fn drain(&mut self) -> Vec<GenResult> {
         let out: Vec<GenResult> = self.result_rx.try_iter().collect();
+        for (dim, cx, cz, ..) in &out {
+            self.pending.remove(&(*dim, *cx, *cz));
+        }
+        out
+    }
+}
+
+/// Browser build: no threads, so generate each requested chunk on the spot and
+/// hand it back on the next `drain`. The main loop already caps requests per
+/// frame, which bounds the work done synchronously.
+#[cfg(target_arch = "wasm32")]
+pub struct GenPool {
+    seed: u32,
+    ready: Vec<GenResult>,
+    pub pending: HashSet<(u8, i32, i32)>,
+    pub workers: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl GenPool {
+    pub fn new(seed: u32) -> GenPool {
+        GenPool {
+            seed,
+            ready: Vec::new(),
+            pending: HashSet::new(),
+            workers: 0,
+        }
+    }
+
+    pub fn request(&mut self, dim: u8, cx: i32, cz: i32) {
+        if self.pending.insert((dim, cx, cz)) {
+            let (c, torches, spawners) = World::generate_chunk_data(self.seed, dim, cx, cz);
+            self.ready.push((dim, cx, cz, c, torches, spawners));
+        }
+    }
+
+    pub fn drain(&mut self) -> Vec<GenResult> {
+        let out = std::mem::take(&mut self.ready);
         for (dim, cx, cz, ..) in &out {
             self.pending.remove(&(*dim, *cx, *cz));
         }

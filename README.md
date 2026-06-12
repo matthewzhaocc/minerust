@@ -58,6 +58,23 @@ Creative, and you're in. Your first day, the classic way:
 5. Light a portal, raid a **nether fortress**, barter with **piglins**,
    craft an **End portal**, and take down the **Ender Dragon**.
 
+### Play in the browser
+
+MineRust also compiles to **WebAssembly** and runs in a browser — macroquad
+(its one rendering dependency) targets the web, and the engine degrades
+gracefully where the browser can't follow: chunk generation runs synchronously
+instead of on worker threads, and saves live only for the session.
+
+```sh
+./tools/build_web.sh                  # builds web/minerust.wasm
+python3 -m http.server -d web 8000    # serve it
+# open http://localhost:8000
+```
+
+The single-player game is fully playable on the web. The networked features —
+LAN multiplayer and **connecting to a Minecraft server** — are native only,
+because browsers can't open raw TCP sockets.
+
 ## Features
 
 ### World

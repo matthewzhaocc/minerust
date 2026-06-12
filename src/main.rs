@@ -731,10 +731,10 @@ async fn game() {
                         1337
                     } else {
                         // Brand-new named world: roll a seed from the clock.
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() ^ d.as_secs() as u32)
-                            .unwrap_or(1337)
+                        // `date::now` works on both native and the web, where
+                        // `std::time::SystemTime` would panic.
+                        let secs = macroquad::miniquad::date::now();
+                        (secs.to_bits() ^ (secs as u64)) as u32
                     }
                 })
         })
@@ -1162,7 +1162,9 @@ async fn game() {
 
     // Process stats for the F3 overlay, sampled off-thread so `ps` never
     // stalls a frame. (cpu %, resident memory MB)
+    #[cfg(not(target_arch = "wasm32"))]
     let proc_stats = std::sync::Arc::new(std::sync::Mutex::new((0.0f32, 0.0f32)));
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let stats = std::sync::Arc::clone(&proc_stats);
         let pid = std::process::id().to_string();
@@ -1186,7 +1188,10 @@ async fn game() {
     // Process stats for the F3 overlay (cpu %, resident memory MB), sampled
     // on a background thread via the cross-platform `sysinfo` crate so the
     // frame loop never blocks. CPU is top-style: % of one core.
+    // On the web there are no OS threads or process introspection, so the F3
+    // overlay simply reads zeros here.
     let proc_stats = std::sync::Arc::new(std::sync::Mutex::new((0.0f32, 0.0f32)));
+    #[cfg(not(target_arch = "wasm32"))]
     {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
         let stats = std::sync::Arc::clone(&proc_stats);
