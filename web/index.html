@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>MineRust — in your browser</title>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0b0d12; }
+        canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+        #overlay {
+            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: #cdd3df; font: 16px/1.5 system-ui, sans-serif; text-align: center; pointer-events: none;
+        }
+        #overlay .card { background: rgba(0,0,0,.55); padding: 18px 26px; border-radius: 10px; }
+        #overlay b { color: #f0f4ff; }
+    </style>
+</head>
+<body>
+    <canvas id="glcanvas" tabindex="1"></canvas>
+    <div id="overlay"><div class="card" id="msg">
+        <b>Loading MineRust…</b><br>building the world from code
+    </div></div>
+
+    <script src="mq_js_bundle.js"></script>
+    <script>
+        // Hide the loading card once the first frame has run.
+        const overlay = document.getElementById("overlay");
+        const canvas = document.getElementById("glcanvas");
+        let started = false;
+        const hide = () => { if (!started) { started = true; overlay.style.display = "none"; } };
+        // macroquad calls wasm_exports.frame each animation frame; give it a beat.
+        window.addEventListener("click", () => canvas.focus());
+        setTimeout(hide, 2500);
+
+        // Boot the game (loads and runs minerust.wasm via the macroquad bundle).
+        load("minerust.wasm");
+    </script>
+</body>
+</html>

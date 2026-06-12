@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 macroquad = "0.4"
 sysinfo = "0.39.3"
+flate2 = "1"
 
 [profile.dev]
 opt-level = 2

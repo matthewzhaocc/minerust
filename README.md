@@ -58,6 +58,23 @@ Creative, and you're in. Your first day, the classic way:
 5. Light a portal, raid a **nether fortress**, barter with **piglins**,
    craft an **End portal**, and take down the **Ender Dragon**.
 
+### Play in the browser
+
+MineRust also compiles to **WebAssembly** and runs in a browser — macroquad
+(its one rendering dependency) targets the web, and the engine degrades
+gracefully where the browser can't follow: chunk generation runs synchronously
+instead of on worker threads, and saves live only for the session.
+
+```sh
+./tools/build_web.sh                  # builds web/minerust.wasm
+python3 -m http.server -d web 8000    # serve it
+# open http://localhost:8000
+```
+
+The single-player game is fully playable on the web. The networked features —
+LAN multiplayer and **connecting to a Minecraft server** — are native only,
+because browsers can't open raw TCP sockets.
+
 ## Features
 
 ### World
@@ -138,6 +155,35 @@ Creative, and you're in. Your first day, the classic way:
   join by address; multiple clients, relayed block edits and positions,
   **host-authoritative mobs and shared drops**, routed damage, and **chat**
   (`T`)
+- **Minecraft-protocol compatible server list ping** — MineRust hosts on
+  25565 and speaks the real Minecraft Java Edition wire protocol alongside
+  its own, so a **stock Minecraft client of any version** can add the server
+  and see it in the Multiplayer list with a live MOTD, version, and player
+  count. Modern *and* legacy (pre-1.7) pings are answered; a login attempt
+  gets a clean, localized disconnect message. Run it headless with no window
+  via `MINERUST_MC_SERVER=1 cargo run`.
+- **Connect to a real Minecraft server** — MineRust can be the *client*:
+  point it at a vanilla Java server (`online-mode=false`) with
+  `MINERUST_MC_CONNECT=host:port cargo run` and it joins for real over
+  protocol 765 (Minecraft 1.20.4) — handshake, login with packet compression,
+  the 1.20.2+ configuration phase, then play, complete with the keep-alive,
+  teleport-confirm and chunk-batch acknowledgements a live server expects. The
+  server's chunks are decoded (paletted block states, long-array unpacking,
+  NBT heightmaps) and streamed into MineRust's own renderer so you can fly
+  around the server's actual world. A headless `MINERUST_MC_SURVEY=host:port`
+  mode joins, decodes, and prints a survey of what it received — verified
+  against a real 1.20.4 server (201 chunks / 6.4M blocks, correct material
+  profile).
+- **All 1058 Minecraft blocks, rendered in colour** — the full Minecraft
+  1.20.4 block registry (every one of its 26,644 block states) is built into
+  MineRust. Each block keeps two identities: a MineRust block for
+  physics/collision/lighting, and a representative *(top, side, bottom)* colour
+  derived from the vanilla textures for rendering. Streamed chunks store the
+  precise Minecraft block per voxel and the renderer paints each with its true
+  colour (610 blocks have derived colours; the rest fall back to the nearest
+  MineRust texture). The colour table is generated data only — no Minecraft
+  texture art is shipped (`tools/gen_mc_colors.rs` + `tools/gen_mc_blocks.py`
+  produce `src/mc_blocks.rs`).
 
 ### Creative mode
 - Per-world game mode (or `/gamemode c|s` live): instant breaking, infinite
@@ -175,6 +221,9 @@ src/
 ├── textures.rs  the entire texture atlas, painted from code
 ├── player.rs    AABB physics, survival stats, movement
 ├── net.rs       LAN protocol (host/client, snapshots, relay)
+├── mcproto.rs   Minecraft Java protocol (server side): ping, status, login
+├── mcclient.rs  Minecraft Java protocol (client side): join a real server
+├── mc_blocks.rs generated Minecraft block-state → MineRust block table
 ├── sound.rs     WAV synthesis
 └── save.rs      binary world format (v5)
 ```
@@ -188,11 +237,16 @@ Useful environment variables for scripting and screenshots:
 | `MINERUST_DEMO=1` | Mob lineup, gear, torches, a redstone circuit, a waterfall |
 | `MINERUST_CREATIVE=1` / `MINERUST_VIEW=n` / `MINERUST_NOSAVE=1` | Mode, view distance, no save file |
 | `MINERUST_HOST=1` / `MINERUST_JOIN=ip` | Multiplayer |
+| `MINERUST_MC_SERVER=1` | Headless Minecraft-protocol server-list endpoint (no window) |
+| `MINERUST_MC_CONNECT=host:port` | Join a real Minecraft (Java, offline-mode) server and stream its world |
+| `MINERUST_MC_SURVEY=host:port` | Headless: join a Minecraft server, decode it, print a survey |
 | `MINERUST_SHOT=1` / `MINERUST_UI=...` / `MINERUST_MENUSHOT=...` | Screenshot automation |
 
 Tests cover terrain determinism (including the threaded generator), fluids,
 gravity, recipes, smelting, drops, enchant data, explosions, villages, tree
-generation, the network codec, and save round-trips: `cargo test --release`.
+generation, the network codec, the Minecraft protocol codec (VarInt encodings,
+status/ping/login round-trips against an in-process client), and save
+round-trips: `cargo test --release`.
 
 ## Scope
 

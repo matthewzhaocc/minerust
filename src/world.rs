@@ -12,12 +12,17 @@ pub const SNOW_LINE: i32 = 62;
 
 pub struct Chunk {
     blocks: Vec<Block>,
+    /// For chunks streamed from a Minecraft server: the Minecraft block-type
+    /// index (+1; 0 = none) per voxel, so the mesher can render its true
+    /// colour. `None` for procedurally generated chunks (zero overhead).
+    mc: Option<Vec<u16>>,
 }
 
 impl Chunk {
     fn new() -> Self {
         Chunk {
             blocks: vec![Block::Air; (CHUNK * CHUNK * HEIGHT) as usize],
+            mc: None,
         }
     }
 
@@ -34,6 +39,17 @@ impl Chunk {
     #[inline]
     pub fn set(&mut self, x: i32, y: i32, z: i32, b: Block) {
         self.blocks[Self::idx(x, y, z)] = b;
+    }
+
+    /// Minecraft block-type index at a voxel, or `None` if this isn't a
+    /// streamed chunk or the voxel has no Minecraft identity.
+    #[inline]
+    pub fn mc_index(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        let m = self.mc.as_ref()?;
+        match m[Self::idx(x, y, z)] {
+            0 => None,
+            v => Some(v - 1),
+        }
     }
 }
 
@@ -380,6 +396,35 @@ impl World {
             }
         }
         self.chunks.insert((cx, cz), c);
+    }
+
+    /// Build (or replace) a chunk straight from blocks streamed off a Minecraft
+    /// server. `blocks` are world coordinates already remapped into MineRust's
+    /// vertical range; out-of-range entries are ignored. No terrain physics is
+    /// run — the chunk is authoritative as received — but it and its neighbours
+    /// are marked dirty so the seams re-mesh.
+    pub fn inject_mc_chunk(&mut self, cx: i32, cz: i32, blocks: &[(i32, i32, i32, Block, u16)]) {
+        let mut c = Chunk::new();
+        let mut mc = vec![0u16; (CHUNK * CHUNK * HEIGHT) as usize];
+        for &(wx, wy, wz, b, mci) in blocks {
+            if !(0..HEIGHT).contains(&wy) {
+                continue;
+            }
+            let (lx, lz) = (wx.rem_euclid(CHUNK), wz.rem_euclid(CHUNK));
+            c.set(lx, wy, lz, b);
+            mc[Chunk::idx(lx, wy, lz)] = mci.saturating_add(1);
+            if matches!(b, Block::Torch | Block::RedstoneTorch | Block::Glowstone) {
+                self.torches.insert((wx, wy, wz));
+            }
+        }
+        c.mc = Some(mc);
+        self.chunks.insert((cx, cz), c);
+        self.dirty.insert((cx, cz));
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if self.chunks.contains_key(&(cx + dx, cz + dz)) {
+                self.dirty.insert((cx + dx, cz + dz));
+            }
+        }
     }
 
     fn gen_nether(&mut self, cx: i32, cz: i32, c: &mut Chunk) {
@@ -1368,6 +1413,10 @@ pub type ChunkData = (Chunk, Vec<(i32, i32, i32)>, Vec<(i32, i32, i32)>);
 
 /// A pool of background threads generating chunks. The main thread requests
 /// coordinates and integrates finished chunks as they arrive.
+/// Background chunk generator. Native builds fan generation out across a pool
+/// of worker threads; the browser (`wasm32`, no threads) generates each
+/// requested chunk synchronously instead, so the same engine runs on the web.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct GenPool {
     work_tx: std::sync::mpsc::Sender<(u8, i32, i32)>,
     result_rx: std::sync::mpsc::Receiver<GenResult>,
@@ -1384,6 +1433,7 @@ type GenResult = (
     Vec<(i32, i32, i32)>,
 );
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GenPool {
     pub fn new(seed: u32) -> GenPool {
         use std::sync::{mpsc, Arc, Mutex};
@@ -1428,6 +1478,44 @@ impl GenPool {
     /// Collect every finished chunk without blocking.
     pub fn drain(&mut self) -> Vec<GenResult> {
         let out: Vec<GenResult> = self.result_rx.try_iter().collect();
+        for (dim, cx, cz, ..) in &out {
+            self.pending.remove(&(*dim, *cx, *cz));
+        }
+        out
+    }
+}
+
+/// Browser build: no threads, so generate each requested chunk on the spot and
+/// hand it back on the next `drain`. The main loop already caps requests per
+/// frame, which bounds the work done synchronously.
+#[cfg(target_arch = "wasm32")]
+pub struct GenPool {
+    seed: u32,
+    ready: Vec<GenResult>,
+    pub pending: HashSet<(u8, i32, i32)>,
+    pub workers: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl GenPool {
+    pub fn new(seed: u32) -> GenPool {
+        GenPool {
+            seed,
+            ready: Vec::new(),
+            pending: HashSet::new(),
+            workers: 0,
+        }
+    }
+
+    pub fn request(&mut self, dim: u8, cx: i32, cz: i32) {
+        if self.pending.insert((dim, cx, cz)) {
+            let (c, torches, spawners) = World::generate_chunk_data(self.seed, dim, cx, cz);
+            self.ready.push((dim, cx, cz, c, torches, spawners));
+        }
+    }
+
+    pub fn drain(&mut self) -> Vec<GenResult> {
+        let out = std::mem::take(&mut self.ready);
         for (dim, cx, cz, ..) in &out {
             self.pending.remove(&(*dim, *cx, *cz));
         }

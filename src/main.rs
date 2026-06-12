@@ -5,6 +5,9 @@ mod blocks;
 mod entities;
 mod gpu;
 mod items;
+mod mc_blocks;
+mod mcclient;
+mod mcproto;
 mod mesher;
 mod net;
 mod player;
@@ -26,6 +29,10 @@ use world::{World, CHUNK, DIM_END, DIM_NETHER, DIM_OVERWORLD, HEIGHT, SEA};
 
 const DAY_LENGTH: f32 = 600.0;
 const REACH: f32 = 6.0;
+/// MineRust worlds are only 96 blocks tall, so a Minecraft column (y -64..319)
+/// is shifted down by this much when streamed in: a Minecraft y maps to
+/// MineRust y + MC_Y_OFFSET, keeping the surface comfortably in range.
+const MC_Y_OFFSET: i32 = -8;
 const CLOUD_Y: f32 = 88.0;
 const SAVE_PATH: &str = "world.sav";
 
@@ -469,8 +476,33 @@ impl Sounds {
     }
 }
 
-#[macroquad::main(conf)]
-async fn main() {
+fn main() {
+    // Headless Minecraft-compatible server: no graphics, no window — just answer
+    // real Minecraft clients' server-list pings and login attempts on 25565.
+    // Checked before macroquad opens a window so it runs on a headless box.
+    if std::env::var("MINERUST_MC_SERVER").is_ok() {
+        if let Err(e) = mcproto::serve_headless() {
+            eprintln!("[mcproto] {e}");
+        }
+        return;
+    }
+    // Headless survey: connect to a real Minecraft server, decode its world,
+    // and print what we received. Proves client-side protocol compatibility.
+    if let Ok(addr) = std::env::var("MINERUST_MC_SURVEY") {
+        mcclient::survey(&addr, 12);
+        return;
+    }
+    // Headless: dump the generated texture atlas as raw RGBA (for inspection).
+    if let Ok(path) = std::env::var("MINERUST_DUMP_ATLAS") {
+        let buf = textures::generate_atlas();
+        std::fs::write(&path, &buf).expect("write atlas");
+        println!("[atlas] wrote {} bytes ({}x{} RGBA) to {path}", buf.len(), textures::ATLAS_PX, textures::ATLAS_PX);
+        return;
+    }
+    macroquad::Window::from_config(conf(), game());
+}
+
+async fn game() {
     // Worst-case chunk section mesh would clamp at the default buffer size.
     gl_set_drawcall_buffer_capacity(50_000, 80_000);
 
@@ -680,7 +712,9 @@ async fn main() {
 
     // --- World, save, spawn ---
     // A joining client plays in the host's world: never load/save locally.
-    let no_save = std::env::var("MINERUST_NOSAVE").is_ok() || joined.is_some();
+    let no_save = std::env::var("MINERUST_NOSAVE").is_ok()
+        || joined.is_some()
+        || std::env::var("MINERUST_MC_CONNECT").is_ok();
     let save_path: String = chosen_save.unwrap_or_else(|| SAVE_PATH.to_string());
     let loaded = if no_save { None } else { save::load(&save_path) };
 
@@ -697,10 +731,10 @@ async fn main() {
                         1337
                     } else {
                         // Brand-new named world: roll a seed from the clock.
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() ^ d.as_secs() as u32)
-                            .unwrap_or(1337)
+                        // `date::now` works on both native and the web, where
+                        // `std::time::SystemTime` would panic.
+                        let secs = macroquad::miniquad::date::now();
+                        (secs.to_bits() ^ (secs as u64)) as u32
                     }
                 })
         })
@@ -785,6 +819,16 @@ async fn main() {
         .map(|f| f.clamp(0.0, 1.0) * DAY_LENGTH)
         .unwrap_or(DAY_LENGTH * 0.25);
     let mut player = Player::new(spawn_pos);
+
+    // Connect to a real Minecraft server and stream its world into MineRust.
+    let mc: Option<mcclient::ClientHandle> = std::env::var("MINERUST_MC_CONNECT")
+        .ok()
+        .map(|addr| {
+            println!("[mcclient] connecting to {addr} ...");
+            mcclient::spawn_client(addr, "MineRust".to_string())
+        });
+    let mut mc_spawned = false;
+    let mut mc_pos_t = 0.0f32;
 
     let mut my_id: u8 = 0;
     if let Some((conn, _, dt0, id)) = joined {
@@ -1118,7 +1162,9 @@ async fn main() {
 
     // Process stats for the F3 overlay, sampled off-thread so `ps` never
     // stalls a frame. (cpu %, resident memory MB)
+    #[cfg(not(target_arch = "wasm32"))]
     let proc_stats = std::sync::Arc::new(std::sync::Mutex::new((0.0f32, 0.0f32)));
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let stats = std::sync::Arc::clone(&proc_stats);
         let pid = std::process::id().to_string();
@@ -1142,7 +1188,10 @@ async fn main() {
     // Process stats for the F3 overlay (cpu %, resident memory MB), sampled
     // on a background thread via the cross-platform `sysinfo` crate so the
     // frame loop never blocks. CPU is top-style: % of one core.
+    // On the web there are no OS threads or process introspection, so the F3
+    // overlay simply reads zeros here.
     let proc_stats = std::sync::Arc::new(std::sync::Mutex::new((0.0f32, 0.0f32)));
+    #[cfg(not(target_arch = "wasm32"))]
     {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
         let stats = std::sync::Arc::clone(&proc_stats);
@@ -3051,6 +3100,18 @@ async fn main() {
             net::NetState::Host { listener, conns, next_id } => {
                 // Accept newcomers and seed them with the world state.
                 while let Ok((stream, peer)) = listener.accept() {
+                    // A real Minecraft client speaks first: hand its server-list
+                    // ping / login off to the Minecraft protocol handler so
+                    // MineRust shows up in the vanilla Multiplayer list.
+                    if mcproto::sniff_minecraft(&stream) {
+                        let status = mcproto::StatusInfo::live(conns.len() as i32 + 1, 16);
+                        std::thread::spawn(move || {
+                            let _ = mcproto::handle(stream, status);
+                        });
+                        continue;
+                    }
+                    // Native MineRust client: undo the sniff's read timeout.
+                    stream.set_read_timeout(None).ok();
                     if let Ok(mut conn) = net::Conn::new(stream, *next_id) {
                         println!("[net] player {} joined from {peer}", *next_id);
                         conn.send(&net::NetMsg::Hello {
@@ -3343,11 +3404,63 @@ async fn main() {
         let pcx = (ppos.x / CHUNK as f32).floor() as i32;
         let pcz = (ppos.z / CHUNK as f32).floor() as i32;
 
+        // When streaming a Minecraft server's world, the server is the source of
+        // chunks — skip procedural generation and integrate what arrives.
+        if let Some(handle) = &mc {
+            let mut injected = 0;
+            while let Ok(ev) = handle.events.try_recv() {
+                match ev {
+                    mcclient::ClientEvent::Chunk(col) => {
+                        let blocks: Vec<(i32, i32, i32, Block, u16)> = col
+                            .blocks
+                            .iter()
+                            .map(|&(x, y, z, b, mci)| (x, y + MC_Y_OFFSET, z, b, mci))
+                            .collect();
+                        world.inject_mc_chunk(col.cx, col.cz, &blocks);
+                        injected += 1;
+                        if injected >= 8 {
+                            break; // spread chunk uploads across frames
+                        }
+                    }
+                    mcclient::ClientEvent::Spawn { x, y, z } => {
+                        player.teleport(vec3(
+                            x as f32,
+                            y as f32 + MC_Y_OFFSET as f32 + 0.2,
+                            z as f32,
+                        ));
+                        mc_spawned = true;
+                    }
+                    mcclient::ClientEvent::Connected { dimension, .. } => {
+                        chat_log.push((format!("Joined Minecraft server ({dimension})"), 10.0));
+                    }
+                    mcclient::ClientEvent::Chat(s) => {
+                        chat_log.push((mcclient::chat_to_text(&s), 10.0));
+                    }
+                    mcclient::ClientEvent::Disconnected(r) => {
+                        chat_log.push((format!("Disconnected: {r}"), 15.0));
+                    }
+                }
+            }
+            // Report our position back so the server keeps chunks loaded near us.
+            mc_pos_t -= dt;
+            if mc_spawned && mc_pos_t <= 0.0 {
+                mc_pos_t = 0.1;
+                let p = player.pos();
+                let _ = handle.pos_tx.send((
+                    p.x as f64,
+                    (p.y - MC_Y_OFFSET as f32) as f64,
+                    p.z as f64,
+                    player.yaw,
+                    0.0,
+                ));
+            }
+        }
+
         // Chunk generation runs on the worker pool; the main thread just
         // queues nearest-first requests and integrates whatever has finished.
         let mut gen_budget = 12;
         for &(dx, dz) in &offsets {
-            if gen_budget == 0 {
+            if gen_budget == 0 || mc.is_some() {
                 break;
             }
             let key = (pcx + dx, pcz + dz);

@@ -2,8 +2,29 @@
 //! Every texture in the game is synthesized here at startup — no asset files.
 
 pub const TILE: usize = 32;
-pub const ATLAS_TILES: usize = 16;
+/// 64×64 tiles: the low 256 hold MineRust's own procedural textures; the rest
+/// hold one (top, side, bottom) triple per Minecraft block, painted from the
+/// `mc_blocks` colour table so a connected server's world renders in colour.
+pub const ATLAS_TILES: usize = 64;
 pub const ATLAS_PX: usize = TILE * ATLAS_TILES;
+
+/// First atlas tile used by Minecraft block colours. MineRust's own tiles all
+/// sit below this.
+pub const MC_TILE_BASE: u16 = 256;
+
+/// Atlas tiles `(top, side, bottom)` for a Minecraft block-type index, or
+/// `None` when that block has no derived colour (caller falls back to the
+/// nearest MineRust block's texture).
+pub fn mc_render_tiles(name_index: u16) -> Option<(u16, u16, u16)> {
+    crate::mc_blocks::FACE_COLORS
+        .get(name_index as usize)
+        .copied()
+        .flatten()
+        .map(|_| {
+            let b = MC_TILE_BASE + name_index * 3;
+            (b, b + 1, b + 2)
+        })
+}
 
 /// Smooth value noise in tile space (bilinear lattice interpolation), for
 /// soft blotches and gradients in the high-resolution painters.
@@ -1909,7 +1930,28 @@ pub fn generate_atlas() -> Vec<u8> {
     hires_core(&mut buf);
     hires_mobs(&mut buf);
 
+    // Minecraft block colours, one (top, side, bottom) triple per block type.
+    paint_mc_tiles(&mut buf);
+
     buf
+}
+
+/// Paint a flat-but-grained colour tile per Minecraft block face into the upper
+/// region of the atlas, so a connected server's blocks render with their real
+/// average colours instead of all collapsing onto MineRust's palette.
+fn paint_mc_tiles(buf: &mut [u8]) {
+    for (i, faces) in crate::mc_blocks::FACE_COLORS.iter().enumerate() {
+        let Some(faces) = faces else { continue };
+        let base = MC_TILE_BASE as usize + i * 3;
+        for (f, rgb) in faces.iter().enumerate() {
+            let salt = (i as u32) << 3 | f as u32;
+            paint(buf, base + f, &move |x, y| {
+                // Subtle per-pixel grain keeps large flat faces from banding.
+                let v = 0.9 + rnd(x, y, salt) * 0.18;
+                px(*rgb, v, 255)
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2440,5 +2482,48 @@ fn flower(x: usize, y: usize, bloom: [u8; 3], salt: u32) -> [u8; 4] {
         px([70, 140, 52], 0.9 + rnd(x, y, salt + 1) * 0.2, 255)
     } else {
         [0, 0, 0, 0]
+    }
+}
+
+#[cfg(test)]
+mod mc_tile_tests {
+    use super::*;
+
+    /// Sample the centre pixel of a tile in the atlas buffer.
+    fn center(buf: &[u8], tile: u16) -> [u8; 3] {
+        let tx = (tile as usize % ATLAS_TILES) * TILE + TILE / 2;
+        let ty = (tile as usize / ATLAS_TILES) * TILE + TILE / 2;
+        let o = (ty * ATLAS_PX + tx) * 4;
+        [buf[o], buf[o + 1], buf[o + 2]]
+    }
+
+    #[test]
+    fn mc_tiles_match_color_table() {
+        let buf = generate_atlas();
+        let mut checked = 0;
+        for (i, faces) in crate::mc_blocks::FACE_COLORS.iter().enumerate() {
+            let Some(faces) = faces else { continue };
+            let (top, side, bot) = mc_render_tiles(i as u16).unwrap();
+            // Painted tiles carry per-pixel grain (±~10%), so allow a margin.
+            for (tile, expect) in [(top, faces[0]), (side, faces[1]), (bot, faces[2])] {
+                let got = center(&buf, tile);
+                for c in 0..3 {
+                    let d = (got[c] as i32 - expect[c] as i32).abs();
+                    assert!(d <= 40, "tile {tile} channel {c}: got {got:?} expect {expect:?}");
+                }
+            }
+            checked += 1;
+            if checked >= 200 {
+                break;
+            }
+        }
+        assert!(checked > 100, "expected many coloured blocks, checked {checked}");
+    }
+
+    #[test]
+    fn mc_tiles_fit_in_atlas() {
+        // The highest Minecraft tile index must stay inside the atlas.
+        let last = MC_TILE_BASE as usize + (crate::mc_blocks::BLOCK_COUNT - 1) * 3 + 2;
+        assert!(last < ATLAS_TILES * ATLAS_TILES, "mc tiles overflow atlas: {last}");
     }
 }
