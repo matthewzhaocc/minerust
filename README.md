@@ -138,6 +138,15 @@ Creative, and you're in. Your first day, the classic way:
   join by address; multiple clients, relayed block edits and positions,
   **host-authoritative mobs and shared drops**, routed damage, and **chat**
   (`T`)
+- **Minecraft-protocol compatible server list ping** — MineRust hosts on
+  25565 and speaks the real Minecraft Java Edition wire protocol alongside
+  its own, so a **stock Minecraft client of any version** can add the server
+  and see it in the Multiplayer list with a live MOTD, version, and player
+  count. Modern *and* legacy (pre-1.7) pings are answered; a login attempt
+  gets a clean, localized disconnect message. Run it headless with no window
+  via `MINERUST_MC_SERVER=1 cargo run`. (Full Play-state join — chunk
+  streaming so a vanilla client can walk around — is the next step; the
+  VarInt/packet codec it needs already lives in `mcproto.rs`.)
 
 ### Creative mode
 - Per-world game mode (or `/gamemode c|s` live): instant breaking, infinite
@@ -175,6 +184,7 @@ src/
 ├── textures.rs  the entire texture atlas, painted from code
 ├── player.rs    AABB physics, survival stats, movement
 ├── net.rs       LAN protocol (host/client, snapshots, relay)
+├── mcproto.rs   Minecraft Java protocol: server-list ping, status, login
 ├── sound.rs     WAV synthesis
 └── save.rs      binary world format (v5)
 ```
@@ -188,11 +198,14 @@ Useful environment variables for scripting and screenshots:
 | `MINERUST_DEMO=1` | Mob lineup, gear, torches, a redstone circuit, a waterfall |
 | `MINERUST_CREATIVE=1` / `MINERUST_VIEW=n` / `MINERUST_NOSAVE=1` | Mode, view distance, no save file |
 | `MINERUST_HOST=1` / `MINERUST_JOIN=ip` | Multiplayer |
+| `MINERUST_MC_SERVER=1` | Headless Minecraft-protocol server-list endpoint (no window) |
 | `MINERUST_SHOT=1` / `MINERUST_UI=...` / `MINERUST_MENUSHOT=...` | Screenshot automation |
 
 Tests cover terrain determinism (including the threaded generator), fluids,
 gravity, recipes, smelting, drops, enchant data, explosions, villages, tree
-generation, the network codec, and save round-trips: `cargo test --release`.
+generation, the network codec, the Minecraft protocol codec (VarInt encodings,
+status/ping/login round-trips against an in-process client), and save
+round-trips: `cargo test --release`.
 
 ## Scope
 

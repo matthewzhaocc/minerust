@@ -5,6 +5,7 @@ mod blocks;
 mod entities;
 mod gpu;
 mod items;
+mod mcproto;
 mod mesher;
 mod net;
 mod player;
@@ -469,8 +470,20 @@ impl Sounds {
     }
 }
 
-#[macroquad::main(conf)]
-async fn main() {
+fn main() {
+    // Headless Minecraft-compatible server: no graphics, no window — just answer
+    // real Minecraft clients' server-list pings and login attempts on 25565.
+    // Checked before macroquad opens a window so it runs on a headless box.
+    if std::env::var("MINERUST_MC_SERVER").is_ok() {
+        if let Err(e) = mcproto::serve_headless() {
+            eprintln!("[mcproto] {e}");
+        }
+        return;
+    }
+    macroquad::Window::from_config(conf(), game());
+}
+
+async fn game() {
     // Worst-case chunk section mesh would clamp at the default buffer size.
     gl_set_drawcall_buffer_capacity(50_000, 80_000);
 
@@ -3051,6 +3064,18 @@ async fn main() {
             net::NetState::Host { listener, conns, next_id } => {
                 // Accept newcomers and seed them with the world state.
                 while let Ok((stream, peer)) = listener.accept() {
+                    // A real Minecraft client speaks first: hand its server-list
+                    // ping / login off to the Minecraft protocol handler so
+                    // MineRust shows up in the vanilla Multiplayer list.
+                    if mcproto::sniff_minecraft(&stream) {
+                        let status = mcproto::StatusInfo::live(conns.len() as i32 + 1, 16);
+                        std::thread::spawn(move || {
+                            let _ = mcproto::handle(stream, status);
+                        });
+                        continue;
+                    }
+                    // Native MineRust client: undo the sniff's read timeout.
+                    stream.set_read_timeout(None).ok();
                     if let Ok(mut conn) = net::Conn::new(stream, *next_id) {
                         println!("[net] player {} joined from {peer}", *next_id);
                         conn.send(&net::NetMsg::Hello {
