@@ -492,6 +492,13 @@ fn main() {
         mcclient::survey(&addr, 12);
         return;
     }
+    // Headless: dump the generated texture atlas as raw RGBA (for inspection).
+    if let Ok(path) = std::env::var("MINERUST_DUMP_ATLAS") {
+        let buf = textures::generate_atlas();
+        std::fs::write(&path, &buf).expect("write atlas");
+        println!("[atlas] wrote {} bytes ({}x{} RGBA) to {path}", buf.len(), textures::ATLAS_PX, textures::ATLAS_PX);
+        return;
+    }
     macroquad::Window::from_config(conf(), game());
 }
 
@@ -3399,10 +3406,10 @@ async fn game() {
             while let Ok(ev) = handle.events.try_recv() {
                 match ev {
                     mcclient::ClientEvent::Chunk(col) => {
-                        let blocks: Vec<(i32, i32, i32, Block)> = col
+                        let blocks: Vec<(i32, i32, i32, Block, u16)> = col
                             .blocks
                             .iter()
-                            .map(|&(x, y, z, b)| (x, y + MC_Y_OFFSET, z, b))
+                            .map(|&(x, y, z, b, mci)| (x, y + MC_Y_OFFSET, z, b, mci))
                             .collect();
                         world.inject_mc_chunk(col.cx, col.cz, &blocks);
                         injected += 1;

@@ -12,12 +12,17 @@ pub const SNOW_LINE: i32 = 62;
 
 pub struct Chunk {
     blocks: Vec<Block>,
+    /// For chunks streamed from a Minecraft server: the Minecraft block-type
+    /// index (+1; 0 = none) per voxel, so the mesher can render its true
+    /// colour. `None` for procedurally generated chunks (zero overhead).
+    mc: Option<Vec<u16>>,
 }
 
 impl Chunk {
     fn new() -> Self {
         Chunk {
             blocks: vec![Block::Air; (CHUNK * CHUNK * HEIGHT) as usize],
+            mc: None,
         }
     }
 
@@ -34,6 +39,17 @@ impl Chunk {
     #[inline]
     pub fn set(&mut self, x: i32, y: i32, z: i32, b: Block) {
         self.blocks[Self::idx(x, y, z)] = b;
+    }
+
+    /// Minecraft block-type index at a voxel, or `None` if this isn't a
+    /// streamed chunk or the voxel has no Minecraft identity.
+    #[inline]
+    pub fn mc_index(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        let m = self.mc.as_ref()?;
+        match m[Self::idx(x, y, z)] {
+            0 => None,
+            v => Some(v - 1),
+        }
     }
 }
 
@@ -387,17 +403,21 @@ impl World {
     /// vertical range; out-of-range entries are ignored. No terrain physics is
     /// run — the chunk is authoritative as received — but it and its neighbours
     /// are marked dirty so the seams re-mesh.
-    pub fn inject_mc_chunk(&mut self, cx: i32, cz: i32, blocks: &[(i32, i32, i32, Block)]) {
+    pub fn inject_mc_chunk(&mut self, cx: i32, cz: i32, blocks: &[(i32, i32, i32, Block, u16)]) {
         let mut c = Chunk::new();
-        for &(wx, wy, wz, b) in blocks {
+        let mut mc = vec![0u16; (CHUNK * CHUNK * HEIGHT) as usize];
+        for &(wx, wy, wz, b, mci) in blocks {
             if !(0..HEIGHT).contains(&wy) {
                 continue;
             }
-            c.set(wx.rem_euclid(CHUNK), wy, wz.rem_euclid(CHUNK), b);
+            let (lx, lz) = (wx.rem_euclid(CHUNK), wz.rem_euclid(CHUNK));
+            c.set(lx, wy, lz, b);
+            mc[Chunk::idx(lx, wy, lz)] = mci.saturating_add(1);
             if matches!(b, Block::Torch | Block::RedstoneTorch | Block::Glowstone) {
                 self.torches.insert((wx, wy, wz));
             }
         }
+        c.mc = Some(mc);
         self.chunks.insert((cx, cz), c);
         self.dirty.insert((cx, cz));
         for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {

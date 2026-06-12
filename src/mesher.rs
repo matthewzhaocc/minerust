@@ -136,6 +136,17 @@ pub fn mesh_chunk(world: &World, cx: i32, cz: i32, atlas: &Texture2D) -> ChunkMe
         }
     };
 
+    // (top, side, bottom) atlas tiles for a voxel: a streamed Minecraft block
+    // renders with its own colour; everything else uses its MineRust texture.
+    let face_tiles = |x: i32, y: i32, z: i32, b: Block| -> (u16, u16, u16) {
+        if let Some(mci) = chunk.mc_index(x, y, z) {
+            if let Some(t) = crate::textures::mc_render_tiles(mci) {
+                return t;
+            }
+        }
+        b.tiles()
+    };
+
     // Flood-fill lighting: block light from emitters, skylight from above,
     // both propagating through non-opaque cells with falloff.
     const M: i32 = 8; // margin so light crosses chunk borders
@@ -295,7 +306,7 @@ pub fn mesh_chunk(world: &World, cx: i32, cz: i32, atlas: &Texture2D) -> ChunkMe
                         let (bl, sl) = light_at(x, y, z);
                         let torch = if b.emits_light() { 1.0 } else { bl };
                         let sky = sl;
-                        let (_, tile, _) = b.tiles();
+                        let (_, tile, _) = face_tiles(x, y, z, b);
                         let (a0, a1) = (0.15, 0.85);
                         for (p0, p1) in [((a0, a0), (a1, a1)), ((a0, a1), (a1, a0))] {
                             push_quad_full(
@@ -327,7 +338,7 @@ pub fn mesh_chunk(world: &World, cx: i32, cz: i32, atlas: &Texture2D) -> ChunkMe
                     {
                         (82, 82, 82)
                     } else {
-                        b.tiles()
+                        face_tiles(x, y, z, b)
                     };
                     let translucent = b.is_water()
                         || matches!(b, Block::Glass | Block::Portal | Block::EndPortal);

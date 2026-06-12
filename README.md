@@ -152,11 +152,21 @@ Creative, and you're in. Your first day, the classic way:
   the 1.20.2+ configuration phase, then play, complete with the keep-alive,
   teleport-confirm and chunk-batch acknowledgements a live server expects. The
   server's chunks are decoded (paletted block states, long-array unpacking,
-  NBT heightmaps) and streamed into MineRust's own renderer, each Minecraft
-  block mapped to its nearest MineRust block, so you can fly around the
-  server's actual world. A headless `MINERUST_MC_SURVEY=host:port` mode joins,
-  decodes, and prints a survey of what it received — verified against a real
-  1.20.4 server (201 chunks / 6.4M blocks, correct material profile).
+  NBT heightmaps) and streamed into MineRust's own renderer so you can fly
+  around the server's actual world. A headless `MINERUST_MC_SURVEY=host:port`
+  mode joins, decodes, and prints a survey of what it received — verified
+  against a real 1.20.4 server (201 chunks / 6.4M blocks, correct material
+  profile).
+- **All 1058 Minecraft blocks, rendered in colour** — the full Minecraft
+  1.20.4 block registry (every one of its 26,644 block states) is built into
+  MineRust. Each block keeps two identities: a MineRust block for
+  physics/collision/lighting, and a representative *(top, side, bottom)* colour
+  derived from the vanilla textures for rendering. Streamed chunks store the
+  precise Minecraft block per voxel and the renderer paints each with its true
+  colour (610 blocks have derived colours; the rest fall back to the nearest
+  MineRust texture). The colour table is generated data only — no Minecraft
+  texture art is shipped (`tools/gen_mc_colors.rs` + `tools/gen_mc_blocks.py`
+  produce `src/mc_blocks.rs`).
 
 ### Creative mode
 - Per-world game mode (or `/gamemode c|s` live): instant breaking, infinite

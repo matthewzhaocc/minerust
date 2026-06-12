@@ -20,7 +20,7 @@
 //! `MINERUST_MC_CONNECT=host:port`.
 
 use crate::blocks::Block;
-use crate::mc_blocks::block_for_state;
+use crate::mc_blocks::{block_for_state, name_index_for_state};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -223,8 +223,10 @@ impl Connection {
 pub struct ChunkColumn {
     pub cx: i32,
     pub cz: i32,
-    /// `(world_x, world_y, world_z, block)` for every non-air block.
-    pub blocks: Vec<(i32, i32, i32, Block)>,
+    /// `(world_x, world_y, world_z, block, mc_block_index)` for every non-air
+    /// block. The Minecraft block-type index drives true-colour rendering; the
+    /// `Block` drives physics.
+    pub blocks: Vec<(i32, i32, i32, Block, u16)>,
 }
 
 pub enum ClientEvent {
@@ -478,7 +480,8 @@ fn parse_chunk(b: &mut Buf) -> io::Result<ChunkColumn> {
             if block == Block::Air {
                 continue;
             }
-            blocks.push((cx * 16 + lx, sec_min_y + ly, cz * 16 + lz, block));
+            let mci = name_index_for_state(state);
+            blocks.push((cx * 16 + lx, sec_min_y + ly, cz * 16 + lz, block, mci));
         }
     }
     Ok(ChunkColumn { cx, cz, blocks })
@@ -713,7 +716,7 @@ pub fn survey(addr: &str, secs: u64) {
             Ok(ClientEvent::Chunk(col)) => {
                 chunks += 1;
                 total_blocks += col.blocks.len();
-                for &(_, _, _, b) in &col.blocks {
+                for &(_, _, _, b, _) in &col.blocks {
                     *histo.entry(b).or_default() += 1;
                 }
                 if surface.is_none() && !col.blocks.is_empty() {
@@ -748,9 +751,9 @@ pub fn survey(addr: &str, secs: u64) {
         let top = col
             .blocks
             .iter()
-            .filter(|(x, _, z, _)| *x == col.cx * 16 + lx && *z == col.cz * 16 + lz)
-            .max_by_key(|(_, y, _, _)| *y);
-        if let Some((x, y, z, b)) = top {
+            .filter(|(x, _, z, _, _)| *x == col.cx * 16 + lx && *z == col.cz * 16 + lz)
+            .max_by_key(|(_, y, _, _, _)| *y);
+        if let Some((x, y, z, b, _)) = top {
             println!("surface block at ({x},{z}): {b:?} at y={y}");
         }
     }
